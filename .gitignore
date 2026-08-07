@@ -28,3 +28,11 @@
 /output
 # Pixi's configuration
 .pixi
+
+# Local tools and caches used to build this fork.
+/.build-tools
+/.conda-pkgs
+/.conda-envs
+/.cache
+/.config
+/.tmp

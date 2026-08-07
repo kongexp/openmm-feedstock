@@ -36,9 +36,6 @@ build:
   script:
     - env with_test_suite={{ with_test_suite }} bash {{ RECIPE_DIR }}/build_openmm.sh   # [unix]
     - set with_test_suite={{ with_test_suite }} &&   {{ RECIPE_DIR }}\build_openmm.bat  # [win]
-  ignore_run_exports:
-    - hip-runtime-amd
-
 requirements:
   build:
     - python                                 # [build_platform != target_platform]
@@ -82,20 +79,14 @@ requirements:
     # No cuda-driver-dev in windows
     - cuda-driver-dev  # [linux]
     {% endif %}
-    - rocm-cmake  # [linux64]
-    - rocm-core  # [linux64]
-    - hipcc  # [linux64]
-    - hip-devel  # [linux64]
-    # The following packages need to be listed here because of a bug in the current hipcc package.
-    # In the future we should be able to remove them.  See https://github.com/conda-forge/hip-feedstock/issues/21#issuecomment-3337150276.
-    - rocm-device-libs  # [linux64]
-    - lld  # [linux64]
-    - clang-tools  # [linux64]
-    - compiler-rt  # [linux64]
   run:
     - python
     - numpy
     - scipy
+    # Keep runtime compilation on CUDA 12.0.  In particular, do not let the
+    # solver upgrade NVRTC to a newer CUDA 12 minor release.
+    - cuda-version {{ cuda_compiler_version }}.*  # [linux64]
+    - cuda-nvrtc {{ cuda_compiler_version }}.*  # [linux64]
     # OpenCL ICD
     - ocl-icd  # [linux]
     - ocl-icd-system  # [linux]

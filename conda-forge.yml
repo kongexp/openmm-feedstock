@@ -1,16 +1,24 @@
-azure:
-  free_disk_space: true
-  store_build_artifacts: true
-build_platform:
-  linux_aarch64: linux_64
-  osx_arm64: osx_64
 conda_build:
   pkg_format: '2'
-conda_forge_output_validation: true
+conda_forge_output_validation: false
+exclusive_config_file: recipe/conda_build_config.yaml
 github:
+  user_or_org: kongexp
+  repo_name: openmm-feedstock
   branch_name: main
   tooling_branch_name: main
+github_actions:
+  upload_packages: false
 provider:
-  linux_aarch64: default
-  linux_ppc64le: azure
-test: native_and_emulated
+  linux_64: github_actions
+  linux_aarch64: None
+  linux_ppc64le: None
+  osx_64: None
+  osx_arm64: None
+  win_64: None
+test: native
+workflow_settings:
+  store_build_artifacts:
+    - provider: github_actions
+      platform: linux_64
+      value: true

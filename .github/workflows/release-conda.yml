@@ -1,0 +1,365 @@
+name: Release conda package to Baymax
+
+on:
+  push:
+    tags:
+      - "openmm-*-cuda12.0-b*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baymax-openmm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release package
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      release_version: ${{ steps.release.outputs.version }}
+      release_build: ${{ steps.release.outputs.build }}
+      cuda_version: ${{ steps.release.outputs.cuda_version }}
+      package_filename: ${{ steps.package.outputs.package_filename }}
+      package_sha256: ${{ steps.package.outputs.package_sha256 }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag and recipe
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "Release tag must point to a commit contained in origin/main" >&2
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+
+          def one_match(pattern: str, text: str, label: str) -> str:
+              matches = re.findall(pattern, text)
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one {label} in the recipe, found {len(matches)}"
+                  )
+              return matches[0]
+
+
+          meta = Path("recipe/meta.yaml").read_text(encoding="utf-8")
+          config = Path("recipe/conda_build_config.yaml").read_text(encoding="utf-8")
+
+          version = one_match(
+              r'(?m)^\{%\s*set\s+version\s*=\s*"([^"]+)"\s*%\}\s*$',
+              meta,
+              "version",
+          )
+          build = one_match(
+              r"(?m)^\{%\s*set\s+build\s*=\s*([0-9]+)\s*%\}\s*$",
+              meta,
+              "build number",
+          )
+          cuda_version = one_match(
+              r"(?m)^cuda_compiler_version:\s*\n-\s*['\"]?([0-9]+\.[0-9]+)['\"]?\s*(?:#.*)?$",
+              config,
+              "CUDA compiler version",
+          )
+
+          if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}(?:[0-9A-Za-z.+-]*)?", version):
+              raise SystemExit(f"Unsupported recipe version format: {version}")
+
+          expected_tag = f"openmm-{version}-cuda{cuda_version}-b{build}"
+          actual_tag = os.environ["RELEASE_TAG"]
+          if actual_tag != expected_tag:
+              raise SystemExit(
+                  f"Release tag {actual_tag!r} does not match recipe; expected {expected_tag!r}"
+              )
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+              output.write(f"build={build}\n")
+              output.write(f"cuda_version={cuda_version}\n")
+              output.write(f"expected_tag={expected_tag}\n")
+
+          print(f"Validated release tag: {expected_tag}")
+          PY
+
+      - name: Build and test conda package
+        shell: bash
+        env:
+          CI: github_actions
+          CONDA_BLD_PATH: build_artifacts
+          CONDA_FORGE_DOCKER_RUN_ARGS: ""
+          CONFIG: linux_64_
+          MINIFORGE_HOME: ~/miniforge3
+          DOCKER_IMAGE: quay.io/condaforge/linux-anvil-x86_64:alma9
+          UPLOAD_PACKAGES: "False"
+          RATTLER_BUILD_COLOR: always
+          RATTLER_BUILD_ENABLE_GITHUB_INTEGRATION: "true"
+        run: |
+          set -euo pipefail
+          export CONDA_BLD_PATH="${CONDA_BLD_PATH/#~/${HOME}}"
+          export FEEDSTOCK_NAME="$(basename "$GITHUB_REPOSITORY")"
+          export GIT_BRANCH="$GITHUB_REF_NAME"
+          export MINIFORGE_HOME="${MINIFORGE_HOME/#~/${HOME}}"
+          export flow_run_id="github_$GITHUB_RUN_ID"
+          export remote_url="https://github.com/$GITHUB_REPOSITORY"
+          export sha="$GITHUB_SHA"
+          export IS_PR_BUILD="False"
+          ./.scripts/run_docker_build.sh
+
+      - name: Stage the release package
+        id: package
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_BUILD: ${{ steps.release.outputs.build }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          packages=(
+            build_artifacts/linux-64/openmm-*.conda
+            build_artifacts/linux-64/openmm-*.tar.bz2
+          )
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            echo "Expected exactly one OpenMM package, found ${#packages[@]}" >&2
+            printf 'Candidate: %s\n' "${packages[@]}" >&2
+            exit 1
+          fi
+
+          package_path="${packages[0]}"
+          package_filename="$(basename "$package_path")"
+          if [[ "$package_filename" != "openmm-${RELEASE_VERSION}-"*"_${RELEASE_BUILD}.conda" &&
+                "$package_filename" != "openmm-${RELEASE_VERSION}-"*"_${RELEASE_BUILD}.tar.bz2" ]]; then
+            echo "Package filename does not match the release version/build: $package_filename" >&2
+            exit 1
+          fi
+
+          mkdir -p release
+          cp -- "$package_path" "release/$package_filename"
+          package_sha256="$(sha256sum "release/$package_filename" | cut -d ' ' -f 1)"
+          printf '%s  %s\n' "$package_sha256" "$package_filename" > release/SHA256SUMS
+
+          echo "package_filename=$package_filename" >> "$GITHUB_OUTPUT"
+          echo "package_sha256=$package_sha256" >> "$GITHUB_OUTPUT"
+          ls -lh release
+
+      - name: Store release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openmm-conda-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish package to Baymax
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: openmm-conda-release
+          path: release
+
+      - name: Verify release artifact
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.package_sha256 }}
+          PACKAGE_FILENAME: ${{ needs.build.outputs.package_filename }}
+        run: |
+          set -euo pipefail
+          test -f "release/$PACKAGE_FILENAME"
+          (
+            cd release
+            sha256sum --check SHA256SUMS
+          )
+          actual_sha256="$(sha256sum "release/$PACKAGE_FILENAME" | cut -d ' ' -f 1)"
+          if [[ "$actual_sha256" != "$EXPECTED_SHA256" ]]; then
+            echo "Artifact SHA256 does not match the build job output" >&2
+            exit 1
+          fi
+
+      - name: Set up conda for Quetz client
+        uses: conda-incubator/setup-miniconda@8ee1f361103df19b6f8c8655fd3967a8ecb162d5 # v4
+        with:
+          activate-environment: quetz-upload
+          auto-activate-base: false
+          python-version: "3.12"
+          channels: conda-forge
+          conda-remove-defaults: true
+          show-channel-urls: true
+
+      - name: Install Quetz client
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          conda install --yes --override-channels --channel conda-forge "quetz-client=0.5.0"
+          quetz-client --help >/dev/null
+
+      - name: Check that the package does not already exist
+        shell: bash
+        env:
+          PACKAGE_FILENAME: ${{ needs.build.outputs.package_filename }}
+          QUETZ_CHANNEL: baymax
+          QUETZ_SERVER_URL: ${{ vars.QUETZ_SERVER_URL }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$QUETZ_SERVER_URL" ]]; then
+            echo "QUETZ_SERVER_URL Actions variable is not configured" >&2
+            exit 1
+          fi
+          server_url="${QUETZ_SERVER_URL%/}"
+          if [[ "$server_url" == */get/* ]]; then
+            echo "QUETZ_SERVER_URL must be the server root, without /get/$QUETZ_CHANNEL" >&2
+            exit 1
+          fi
+          if [[ "$server_url" == http://* ]]; then
+            echo "::warning::Baymax is using unencrypted HTTP transport"
+          elif [[ "$server_url" != https://* ]]; then
+            echo "QUETZ_SERVER_URL must start with http:// or https://" >&2
+            exit 1
+          fi
+
+          repodata_file="$RUNNER_TEMP/baymax-repodata-before.json"
+          repodata_url="${server_url}/get/${QUETZ_CHANNEL}/linux-64/repodata.json?release_check=${GITHUB_RUN_ID}"
+          curl --fail --silent --show-error --location \
+            --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 \
+            --header "Cache-Control: no-cache" \
+            "$repodata_url" --output "$repodata_file"
+
+          python - "$repodata_file" "$PACKAGE_FILENAME" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          repodata_path = Path(sys.argv[1])
+          filename = sys.argv[2]
+          repodata = json.loads(repodata_path.read_text(encoding="utf-8"))
+
+          records = {}
+          for section_name in ("packages", "packages.conda"):
+              section = repodata.get(section_name, {})
+              if not isinstance(section, dict):
+                  raise SystemExit(f"Invalid {section_name!r} section in repodata")
+              records.update(section)
+
+          if filename in records:
+              raise SystemExit(
+                  f"Package already exists in Baymax and will not be overwritten: {filename}"
+              )
+          print(f"Package is not present in Baymax: {filename}")
+          PY
+
+      - name: Upload package to Baymax
+        shell: bash -el {0}
+        env:
+          PACKAGE_FILENAME: ${{ needs.build.outputs.package_filename }}
+          QUETZ_API_KEY: ${{ secrets.QUETZ_API_KEY }}
+          QUETZ_CHANNEL: baymax
+          QUETZ_SERVER_URL: ${{ vars.QUETZ_SERVER_URL }}
+        run: |
+          set -euo pipefail
+          set +x
+          if [[ -z "$QUETZ_API_KEY" ]]; then
+            echo "QUETZ_API_KEY Actions secret is not configured" >&2
+            exit 1
+          fi
+          quetz-client post_file_to_channel \
+            "$QUETZ_CHANNEL" "release/$PACKAGE_FILENAME"
+
+      - name: Verify package in Baymax repodata
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.package_sha256 }}
+          PACKAGE_FILENAME: ${{ needs.build.outputs.package_filename }}
+          QUETZ_CHANNEL: baymax
+          QUETZ_SERVER_URL: ${{ vars.QUETZ_SERVER_URL }}
+        run: |
+          set -euo pipefail
+          server_url="${QUETZ_SERVER_URL%/}"
+          repodata_file="$RUNNER_TEMP/baymax-repodata-after.json"
+          verified=false
+
+          for attempt in $(seq 1 12); do
+            repodata_url="${server_url}/get/${QUETZ_CHANNEL}/linux-64/repodata.json?release_check=${GITHUB_RUN_ID}-${attempt}"
+            if ! curl --fail --silent --show-error --location \
+              --connect-timeout 15 --max-time 120 \
+              --header "Cache-Control: no-cache" \
+              "$repodata_url" --output "$repodata_file"; then
+              echo "Repodata request failed on attempt $attempt; retrying"
+              sleep 5
+              continue
+            fi
+
+            set +e
+            python - "$repodata_file" "$PACKAGE_FILENAME" "$EXPECTED_SHA256" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          repodata_path = Path(sys.argv[1])
+          filename = sys.argv[2]
+          expected_sha256 = sys.argv[3].lower()
+          repodata = json.loads(repodata_path.read_text(encoding="utf-8"))
+
+          record = None
+          for section_name in ("packages", "packages.conda"):
+              section = repodata.get(section_name, {})
+              if isinstance(section, dict) and filename in section:
+                  record = section[filename]
+                  break
+
+          if record is None:
+              raise SystemExit(1)
+
+          actual_sha256 = str(record.get("sha256", "")).lower()
+          if actual_sha256 != expected_sha256:
+              print(
+                  f"Repodata SHA256 mismatch for {filename}: "
+                  f"expected {expected_sha256}, got {actual_sha256 or '<missing>'}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(2)
+
+          print(f"Verified Baymax package: {filename} ({actual_sha256})")
+          PY
+            check_status=$?
+            set -e
+
+            if [[ $check_status -eq 0 ]]; then
+              verified=true
+              break
+            elif [[ $check_status -ne 1 ]]; then
+              exit "$check_status"
+            fi
+
+            echo "Package is not indexed yet (attempt $attempt/12); retrying"
+            sleep 5
+          done
+
+          if [[ "$verified" != true ]]; then
+            echo "Package was uploaded but did not appear in Baymax repodata" >&2
+            exit 1
+          fi

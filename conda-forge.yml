@@ -9,6 +9,7 @@ github:
   tooling_branch_name: main
 github_actions:
   upload_packages: false
+upload_on_branch: main
 provider:
   linux_64: github_actions
   linux_aarch64: None
@@ -16,6 +17,10 @@ provider:
   osx_64: None
   osx_arm64: None
   win_64: None
+skip_render:
+  - .gitignore
+  - README.md
+  - .github/workflows/release-conda.yml
 test: native
 workflow_settings:
   store_build_artifacts:

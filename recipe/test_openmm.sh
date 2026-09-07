@@ -35,7 +35,13 @@ fi
 #python -c "from openmm import Platform as P; n = P.getNumPlatforms(); assert n == $n_platforms, f'n_platforms ({n}) != $n_platforms'"
 
 # Run a small MD
-cd ${PREFIX}/share/openmm/examples/benchmarks
+# OpenMM 8.6 moved the benchmarks into an examples/benchmarks/ subdirectory.
+# Older releases (e.g. 8.2.0) keep benchmark.py directly under examples/.
+if [[ -d ${PREFIX}/share/openmm/examples/benchmarks ]]; then
+    cd ${PREFIX}/share/openmm/examples/benchmarks
+else
+    cd ${PREFIX}/share/openmm/examples
+fi
 python benchmark.py --test=rf --seconds=10 --platform=Reference
 python benchmark.py --test=rf --seconds=10 --platform=CPU
 if [[ -z ${CI-} ]]; then  # Run only outside CI, assuming there will be a GPU there

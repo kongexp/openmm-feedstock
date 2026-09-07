@@ -1,7 +1,10 @@
 python:
 - 3.10.* *_cpython
 numpy:
-- '2'
+# OpenMM only gained numpy 2 support in 8.2.0 (upstream commit 1cd905b4a,
+# openmm/openmm#4622). Building 8.1.2 against numpy 2 headers fails in the SWIG
+# typemaps. Bump back to '2' when moving the recipe to 8.2.0 or newer.
+- '1.26'
 c_compiler:
 - gcc
 c_compiler_version:

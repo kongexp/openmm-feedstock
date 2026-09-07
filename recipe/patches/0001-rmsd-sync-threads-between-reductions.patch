@@ -1,0 +1,21 @@
+Add a block-wide barrier between the two reduction loops in reduceValue.
+
+The first loop only issues SYNC_WARPS, which synchronizes within a warp.
+The second loop reads temp[thread+step] across warps, but its SYNC_THREADS
+sits at the end of the loop body, so it does not cover the reads performed
+by the loop's first iteration. Insert an explicit SYNC_THREADS before the
+second loop.
+
+reduceValue is called unconditionally by every thread in the work group,
+so the added barrier is reachable by all threads.
+
+--- a/platforms/common/src/kernels/rmsd.cc
++++ b/platforms/common/src/kernels/rmsd.cc
+@@ -14,6 +14,7 @@ DEVICE real reduceValue(real value, LOCAL_ARG volatile real* temp) {
+             temp[thread] = temp[thread] + temp[thread+step];
+         SYNC_WARPS;
+     }
++    SYNC_THREADS;
+     for (int step = 32; step < LOCAL_SIZE; step *= 2) {
+         if (thread+step < LOCAL_SIZE && thread%(2*step) == 0)
+             temp[thread] = temp[thread] + temp[thread+step];

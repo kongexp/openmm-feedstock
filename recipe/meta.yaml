@@ -1,6 +1,6 @@
 {% set name = "openmm" %}
-{% set version = "8.6.0" %}
-{% set build = 0 %}
+{% set version = "8.2.0" %}
+{% set build = 100 %}
 {% set with_test_suite = "false" %}
 #{% set with_test_suite = "true" %}  # [(osx and arm64)]
 
@@ -16,7 +16,9 @@ package:
 
 source:
   git_url: https://github.com/openmm/{{ name }}.git
-  git_rev: "c6173db"
+  git_rev: "8.2.0"
+  patches:
+    - patches/0001-rmsd-sync-threads-between-reductions.patch
 
 build:
   number: {{ build }}
